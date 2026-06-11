@@ -1,0 +1,5 @@
+# Build artifacts
+parts/
+stage/
+prime/
+*.snap

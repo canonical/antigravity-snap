@@ -1,0 +1,19 @@
+#!/bin/sh
+
+# LDAP/AD users are not in /etc/passwd; generate a synthetic entry so
+# the language server's os/user.LookupId() call can resolve the current user.
+# $USER and $HOME are set by PAM before the snap runs; id -u/id -g use
+# kernel syscalls and always work regardless of NSS configuration.
+_NSS_TMPDIR=$(mktemp -d)
+trap 'rm -rf "$_NSS_TMPDIR"' EXIT INT TERM
+
+printf '%s:x:%s:%s:%s:%s:/bin/sh\n' \
+    "${USER:-user}" "$(id -u)" "$(id -g)" "${USER:-user}" "${HOME:-/tmp}" \
+    > "$_NSS_TMPDIR/passwd"
+printf '%s:x:%s:\n' "${USER:-user}" "$(id -g)" > "$_NSS_TMPDIR/group"
+
+export NSS_WRAPPER_PASSWD="$_NSS_TMPDIR/passwd"
+export NSS_WRAPPER_GROUP="$_NSS_TMPDIR/group"
+export LD_PRELOAD="$SNAP/usr/lib/x86_64-linux-gnu/libnss_wrapper.so"
+
+exec "$SNAP/opt/antigravity/antigravity" --no-sandbox --no-zygote "$@"
