@@ -1,0 +1,62 @@
+name: Antigravity release watch
+
+on:
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  watch:
+    name: Update snapcraft on new release
+    runs-on: [self-hosted, linux, noble]
+    steps:
+      - name: Check out main branch
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Detect release and update snapcraft
+        id: detect
+        run: |
+          set -euo pipefail
+          result="$(scripts/detect_new_release.sh)"
+          printf '%s\n' "${result}" >> "${GITHUB_OUTPUT}"
+
+      - name: Open or update PR
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          DETECTED_VERSION: ${{ steps.detect.outputs.detected_version }}
+          DETECTED_BUILD: ${{ steps.detect.outputs.detected_build }}
+          DETECTED_LINUX_X64: ${{ steps.detect.outputs.detected_linux_x64 }}
+          DETECTED_LINUX_ARM: ${{ steps.detect.outputs.detected_linux_arm }}
+          EXPECTED_VERSION: ${{ steps.detect.outputs.expected_version }}
+        run: |
+          set -euo pipefail
+
+          now_utc="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          branch="automation/update-antigravity-${DETECTED_VERSION}-${DETECTED_BUILD}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B "${branch}"
+          git add snap/snapcraft.yaml
+          git commit -m "chore: update Antigravity to ${DETECTED_VERSION}-${DETECTED_BUILD}"
+          git push origin "${branch}" --force
+
+          pr_title="chore: update Antigravity to ${DETECTED_VERSION}"
+          pr_body="$(printf 'Automated update from release monitor.\n\n- Previous snapcraft version: %s\n- Detected version: %s\n- Detected build: %s\n- linux-x64: %s\n- linux-arm: %s\n- Source: https://antigravity.google/releases\n- Checked at: %s\n' "${EXPECTED_VERSION}" "${DETECTED_VERSION}" "${DETECTED_BUILD}" "${DETECTED_LINUX_X64}" "${DETECTED_LINUX_ARM}" "${now_utc}")"
+
+          pr_number="$(gh pr list --repo "${REPOSITORY}" --head "${branch}" --base main --state open --json number --jq '.[0].number // empty')"
+
+          if [ -n "${pr_number}" ]; then
+            gh pr edit --repo "${REPOSITORY}" "${pr_number}" --title "${pr_title}" --body "${pr_body}"
+          else
+            gh pr create --repo "${REPOSITORY}" --base main --head "${branch}" --title "${pr_title}" --body "${pr_body}"
+          fi
