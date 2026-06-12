@@ -1,0 +1,170 @@
+name: Snap CI/CD
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Git tag (v*) to build and publish
+        required: true
+        type: string
+      channel:
+        description: Snap Store channel to publish
+        required: true
+        type: choice
+        default: latest/edge
+        options:
+          - latest/edge
+          - latest/beta
+          - latest/candidate
+          - latest/stable
+
+permissions:
+  contents: read
+
+concurrency:
+  group: snap-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and test (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Validate manual source_ref
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          case "${{ inputs.source_ref }}" in
+            v*) ;;
+            *)
+              echo "workflow_dispatch source_ref must be a v* tag."
+              exit 1
+              ;;
+          esac
+
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.source_ref) || github.ref }}
+
+      - name: Build snap
+        id: build
+        uses: snapcore/action-build@3bdaa03e1ba6bf59a65f84a751d943d549a54e79 # v1.3.0
+        with:
+          snapcraft-args: pack --build-for=${{ matrix.arch }}
+
+      - name: Prepare snapd
+        run: |
+          sudo snap wait system seed.loaded
+          [ -d /snap ] || sudo ln -s /var/lib/snapd/snap /snap
+
+      - name: Smoke test snap
+        run: |
+          sudo snap install --dangerous "${{ steps.build.outputs.snap }}"
+          snap run --shell antigravity -c 'test -x "$SNAP/bin/antigravity"; test -x "$SNAP/opt/antigravity/antigravity"'
+
+      - name: Remove test install
+        if: always()
+        run: sudo snap remove --purge antigravity || true
+
+      - name: Upload snap artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: antigravity-snap-${{ matrix.arch }}
+          path: ${{ steps.build.outputs.snap }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish (${{ matrix.arch }})
+    needs: build
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+          - arch: arm64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.source_ref) || github.ref }}
+
+      - name: Select release channel
+        id: channel
+        env:
+          INPUT_CHANNEL: ${{ inputs.channel }}
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            release_channel="${INPUT_CHANNEL}"
+          elif [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            release_channel="latest/edge"
+          else
+            release_channel="latest/stable"
+          fi
+          echo "value=${release_channel}" >> "${GITHUB_OUTPUT}"
+
+      - name: Validate tag matches snap version
+        if: |
+          startsWith(github.ref, 'refs/tags/v') ||
+          (github.event_name == 'workflow_dispatch' && steps.channel.outputs.value == 'latest/stable')
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            tag_ref="${{ inputs.source_ref }}"
+            case "${tag_ref}" in
+              v*) ;;
+              *)
+                echo "Stable manual publish requires source_ref to be a v* tag."
+                exit 1
+                ;;
+            esac
+          else
+            tag_ref="${GITHUB_REF_NAME}"
+          fi
+
+          snap_version="$(sed -n "s/^version: '\(.*\)'/\1/p" snap/snapcraft.yaml)"
+          tag_version="${tag_ref#v}"
+          test -n "${snap_version}"
+          test "${snap_version}" = "${tag_version}"
+
+      - name: Download snap artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: antigravity-snap-${{ matrix.arch }}
+          path: dist/${{ matrix.arch }}
+
+      - name: Select snap file
+        id: snap
+        run: |
+          snap_file="$(find "dist/${{ matrix.arch }}" -maxdepth 1 -name '*.snap' | head -n1)"
+          test -n "${snap_file}"
+          echo "path=${snap_file}" >> "${GITHUB_OUTPUT}"
+
+      - name: Publish to Snap Store
+        uses: snapcore/action-publish@214b86e5ca036ead1668c79afb81e550e6c54d40 # v1.2.0
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.STORE_LOGIN }}
+        with:
+          snap: ${{ steps.snap.outputs.path }}
+          release: ${{ steps.channel.outputs.value }}
