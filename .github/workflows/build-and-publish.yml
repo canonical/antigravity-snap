@@ -25,6 +25,7 @@ on:
           - latest/stable
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -32,8 +33,109 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  resolve:
+    name: Resolve artifact reuse
+    runs-on: ubuntu-24.04
+    outputs:
+      publish_enabled: ${{ steps.resolve.outputs.publish_enabled }}
+      release_channel: ${{ steps.resolve.outputs.release_channel }}
+      channel_slug: ${{ steps.resolve.outputs.channel_slug }}
+      commit_sha: ${{ steps.resolve.outputs.commit_sha }}
+      reusable_run_id: ${{ steps.resolve.outputs.reusable_run_id }}
+      skip_publish: ${{ steps.resolve.outputs.skip_publish }}
+    steps:
+      - name: Resolve publish target and reusable artifacts
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+
+          commit_sha="${GITHUB_SHA}"
+          echo "commit_sha=${commit_sha}" >> "${GITHUB_OUTPUT}"
+
+          publish_enabled="false"
+          release_channel=""
+          case "${GITHUB_EVENT_NAME}" in
+            workflow_dispatch)
+              publish_enabled="true"
+              release_channel="${INPUT_CHANNEL}"
+              ;;
+            push)
+              publish_enabled="true"
+              if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+                release_channel="latest/edge"
+              elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+                release_channel="latest/stable"
+              fi
+              ;;
+          esac
+
+          echo "publish_enabled=${publish_enabled}" >> "${GITHUB_OUTPUT}"
+          echo "release_channel=${release_channel}" >> "${GITHUB_OUTPUT}"
+
+          if [ "${publish_enabled}" != "true" ]; then
+            echo "channel_slug=" >> "${GITHUB_OUTPUT}"
+            echo "reusable_run_id=" >> "${GITHUB_OUTPUT}"
+            echo "skip_publish=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          channel_slug="${release_channel//\//-}"
+          expected_amd64="antigravity-snap-amd64-${commit_sha}"
+          expected_arm64="antigravity-snap-arm64-${commit_sha}"
+          published_marker="published-${channel_slug}-${commit_sha}"
+          workflow_file="${GITHUB_WORKFLOW_REF#${GITHUB_REPOSITORY}/}"
+          workflow_file="${workflow_file%@*}"
+
+          echo "channel_slug=${channel_slug}" >> "${GITHUB_OUTPUT}"
+
+          reusable_run_id=""
+          skip_publish="false"
+          while IFS= read -r run_id; do
+            [ -n "${run_id}" ] || continue
+            if [ "${run_id}" = "${GITHUB_RUN_ID}" ]; then
+              continue
+            fi
+
+            artifacts="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts?per_page=100" --jq '.artifacts[].name')"
+            has_amd64="false"
+            has_arm64="false"
+            has_marker="false"
+
+            if printf '%s\n' "${artifacts}" | grep -Fxq "${expected_amd64}"; then
+              has_amd64="true"
+            fi
+            if printf '%s\n' "${artifacts}" | grep -Fxq "${expected_arm64}"; then
+              has_arm64="true"
+            fi
+            if printf '%s\n' "${artifacts}" | grep -Fxq "${published_marker}"; then
+              has_marker="true"
+            fi
+
+            if [ "${has_amd64}" = "true" ] && [ "${has_arm64}" = "true" ] && [ -z "${reusable_run_id}" ]; then
+              reusable_run_id="${run_id}"
+            fi
+
+            if [ "${has_amd64}" = "true" ] && [ "${has_arm64}" = "true" ] && [ "${has_marker}" = "true" ]; then
+              reusable_run_id="${run_id}"
+              skip_publish="true"
+              break
+            fi
+          done <<EOF
+          $(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs?head_sha=${commit_sha}&status=success&per_page=100" --jq '.workflow_runs[].id')
+          EOF
+
+          echo "reusable_run_id=${reusable_run_id}" >> "${GITHUB_OUTPUT}"
+          echo "skip_publish=${skip_publish}" >> "${GITHUB_OUTPUT}"
+
   build:
     name: Build and test (${{ matrix.arch }})
+    needs: resolve
+    if: |
+      needs.resolve.outputs.skip_publish != 'true' &&
+      needs.resolve.outputs.reusable_run_id == ''
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -85,17 +187,20 @@ jobs:
       - name: Upload snap artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: antigravity-snap-${{ matrix.arch }}
+          name: antigravity-snap-${{ matrix.arch }}-${{ github.sha }}
           path: ${{ steps.build.outputs.snap }}
           if-no-files-found: error
 
   publish:
     name: Publish (${{ matrix.arch }})
-    needs: build
+    needs:
+      - resolve
+      - build
     if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+      always() &&
+      needs.resolve.outputs.publish_enabled == 'true' &&
+      needs.resolve.outputs.skip_publish != 'true' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -113,17 +218,8 @@ jobs:
 
       - name: Select release channel
         id: channel
-        env:
-          INPUT_CHANNEL: ${{ inputs.channel }}
         run: |
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            release_channel="${INPUT_CHANNEL}"
-          elif [ "${GITHUB_REF}" = "refs/heads/main" ]; then
-            release_channel="latest/edge"
-          else
-            release_channel="latest/stable"
-          fi
-          echo "value=${release_channel}" >> "${GITHUB_OUTPUT}"
+          echo "value=${{ needs.resolve.outputs.release_channel }}" >> "${GITHUB_OUTPUT}"
 
       - name: Validate tag matches snap version
         if: |
@@ -148,10 +244,30 @@ jobs:
           test -n "${snap_version}"
           test "${snap_version}" = "${tag_version}"
 
-      - name: Download snap artifact
+      - name: Download snap artifact from previous successful run
+        if: needs.resolve.outputs.reusable_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ needs.resolve.outputs.reusable_run_id }}
+          ARTIFACT_NAME: antigravity-snap-${{ matrix.arch }}-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/${{ matrix.arch }}"
+          artifact_url="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" --jq ".artifacts[] | select(.name == \"${ARTIFACT_NAME}\") | .archive_download_url" | head -n1)"
+          test -n "${artifact_url}"
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${artifact_url}" \
+            -o "dist/${{ matrix.arch }}/artifact.zip"
+          unzip -o "dist/${{ matrix.arch }}/artifact.zip" -d "dist/${{ matrix.arch }}"
+          rm -f "dist/${{ matrix.arch }}/artifact.zip"
+
+      - name: Download snap artifact from current run
+        if: needs.resolve.outputs.reusable_run_id == ''
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: antigravity-snap-${{ matrix.arch }}
+          name: antigravity-snap-${{ matrix.arch }}-${{ github.sha }}
           path: dist/${{ matrix.arch }}
 
       - name: Select snap file
@@ -168,3 +284,33 @@ jobs:
         with:
           snap: ${{ steps.snap.outputs.path }}
           release: ${{ steps.channel.outputs.value }}
+
+  mark-published:
+    name: Mark published release
+    needs:
+      - resolve
+      - publish
+    if: |
+      needs.resolve.outputs.publish_enabled == 'true' &&
+      needs.resolve.outputs.skip_publish != 'true' &&
+      needs.publish.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Create publish marker artifact
+        run: |
+          set -euo pipefail
+          mkdir -p marker
+          marker_name="published-${{ needs.resolve.outputs.channel_slug }}-${{ needs.resolve.outputs.commit_sha }}"
+          printf 'published=%s\nchannel=%s\nsha=%s\nrun_id=%s\n' \
+            "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            "${{ needs.resolve.outputs.release_channel }}" \
+            "${{ needs.resolve.outputs.commit_sha }}" \
+            "${GITHUB_RUN_ID}" \
+            > "marker/${marker_name}.txt"
+
+      - name: Upload publish marker artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: published-${{ needs.resolve.outputs.channel_slug }}-${{ needs.resolve.outputs.commit_sha }}
+          path: marker/
+          if-no-files-found: error
