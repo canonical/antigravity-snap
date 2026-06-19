@@ -1,0 +1,21 @@
+name: CLA Check
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+  statuses: write
+
+jobs:
+  cla-check:
+    name: Canonical CLA check
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check CLA
+        uses: canonical/has-signed-canonical-cla@v2
+        with:
+          bot-accounts: '["dependabot[bot]"]'

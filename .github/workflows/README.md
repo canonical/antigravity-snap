@@ -91,12 +91,32 @@ All actions are pinned to immutable commit SHAs:
 - `actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c` (`v8.0.1`)
 - `snapcore/action-build@3bdaa03e1ba6bf59a65f84a751d943d549a54e79` (`v1.3.0`)
 - `snapcore/action-publish@214b86e5ca036ead1668c79afb81e550e6c54d40` (`v1.2.0`)
+- `canonical/has-signed-canonical-cla@v2` (used for CLA verification)
 
 Updates should be reviewed before bumping SHAs.
 
 ### Concurrency
 
 Build and publish operations for the same ref are serialized via concurrency group `snap-Snap CI/CD-<ref>`. In-progress runs are cancelled when a new run starts for the same ref.
+
+## cla.yml
+
+Verifies that pull request contributors have signed the Canonical Contributor License Agreement (CLA).
+
+### Triggers
+
+Runs on `pull_request_target` events for:
+- `opened`
+- `synchronize`
+- `reopened`
+
+Using `pull_request_target` ensures the workflow has appropriate permissions to set the commit status check even for pull requests submitted from external forks.
+
+### Behavior
+
+1. Checks the pull request author against the Canonical CLA records.
+2. Exempts bot accounts defined in `bot-accounts` (e.g. `dependabot[bot]`).
+3. Reports compliance status back to GitHub.
 
 ## detect-new-release.yml
 
