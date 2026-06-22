@@ -1,0 +1,279 @@
+name: Promote the snap
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Git tag (v*) to promote
+        required: true
+        type: string
+      source_channel:
+        description: Source Snap Store channel
+        required: true
+        type: choice
+        default: latest/edge
+        options:
+          - latest/edge
+          - latest/beta
+          - latest/candidate
+          - latest/stable
+      target_channel:
+        description: Target Snap Store channel
+        required: true
+        type: choice
+        default: latest/stable
+        options:
+          - latest/edge
+          - latest/beta
+          - latest/candidate
+          - latest/stable
+      expected_source_revision_amd64:
+        description: Optional override for expected source-channel amd64 revision
+        required: false
+        type: string
+      expected_source_revision_arm64:
+        description: Optional override for expected source-channel arm64 revision
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: snap-promote-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  resolve:
+    name: Resolve promotion reuse
+    runs-on: ubuntu-24.04
+    outputs:
+      release_ref: ${{ steps.resolve.outputs.release_ref }}
+      source_channel: ${{ steps.resolve.outputs.source_channel }}
+      target_channel: ${{ steps.resolve.outputs.target_channel }}
+      source_channel_slug: ${{ steps.resolve.outputs.source_channel_slug }}
+      marker_name: ${{ steps.resolve.outputs.marker_name }}
+      skip_promote: ${{ steps.resolve.outputs.skip_promote }}
+    steps:
+      - name: Resolve promotion channels and existing marker
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_SOURCE_REF: ${{ inputs.source_ref }}
+          INPUT_SOURCE_CHANNEL: ${{ inputs.source_channel }}
+          INPUT_TARGET_CHANNEL: ${{ inputs.target_channel }}
+        run: |
+          set -euo pipefail
+
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            release_ref="${INPUT_SOURCE_REF}"
+            source_channel="${INPUT_SOURCE_CHANNEL}"
+            target_channel="${INPUT_TARGET_CHANNEL}"
+          else
+            release_ref="${GITHUB_REF_NAME}"
+            source_channel="latest/edge"
+            target_channel="latest/stable"
+          fi
+
+          source_channel_slug="${source_channel//\//-}"
+          target_channel_slug="${target_channel//\//-}"
+          marker_name="published-${target_channel_slug}-${release_ref}"
+          workflow_file="${GITHUB_WORKFLOW_REF#${GITHUB_REPOSITORY}/}"
+          workflow_file="${workflow_file%@*}"
+
+          skip_promote="false"
+          while IFS= read -r run_id; do
+            [ -n "${run_id}" ] || continue
+            if [ "${run_id}" = "${GITHUB_RUN_ID}" ]; then
+              continue
+            fi
+
+            artifacts="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts?per_page=100" --jq '.artifacts[].name')"
+            if printf '%s\n' "${artifacts}" | grep -Fxq "${marker_name}"; then
+              skip_promote="true"
+              break
+            fi
+          done <<EOF
+          $(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs?status=success&per_page=100" --jq '.workflow_runs[].id')
+          EOF
+
+          echo "release_ref=${release_ref}" >> "${GITHUB_OUTPUT}"
+          echo "source_channel=${source_channel}" >> "${GITHUB_OUTPUT}"
+          echo "target_channel=${target_channel}" >> "${GITHUB_OUTPUT}"
+          echo "source_channel_slug=${source_channel_slug}" >> "${GITHUB_OUTPUT}"
+          echo "marker_name=${marker_name}" >> "${GITHUB_OUTPUT}"
+          echo "skip_promote=${skip_promote}" >> "${GITHUB_OUTPUT}"
+
+  promote:
+    name: Promote source to target
+    needs: resolve
+    if: needs.resolve.outputs.skip_promote != 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.source_ref) || github.ref }}
+
+      - name: Validate source_ref format
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          case "${SOURCE_REF}" in
+            v*) ;;
+            *)
+              echo "workflow_dispatch source_ref must be a v* tag."
+              exit 1
+              ;;
+          esac
+
+      - name: Validate tag matches snap version
+        env:
+          TAG_REF: ${{ needs.resolve.outputs.release_ref }}
+        run: |
+          snap_version="$(sed -n "s/^version: '\(.*\)'/\1/p" snap/snapcraft.yaml)"
+          tag_version="${TAG_REF#v}"
+          test -n "${snap_version}"
+          test "${snap_version}" = "${tag_version}"
+
+      - name: Verify source-channel revisions match tagged commit
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_CHANNEL: ${{ needs.resolve.outputs.source_channel }}
+          SOURCE_CHANNEL_SLUG: ${{ needs.resolve.outputs.source_channel_slug }}
+          INPUT_EXPECTED_SOURCE_REVISION_AMD64: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_source_revision_amd64 || '' }}
+          INPUT_EXPECTED_SOURCE_REVISION_ARM64: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_source_revision_arm64 || '' }}
+          TAG_REF: ${{ needs.resolve.outputs.release_ref }}
+        run: |
+          set -euo pipefail
+
+          tag_commit_sha="$(git rev-list -n1 "${TAG_REF}")"
+          marker_name="published-${SOURCE_CHANNEL_SLUG}-${tag_commit_sha}"
+          artifact_run_id=""
+
+          source_track="${SOURCE_CHANNEL%%/*}"
+          source_risk="${SOURCE_CHANNEL#*/}"
+          source_risk="${source_risk%%/*}"
+
+          while IFS= read -r run_id; do
+            [ -n "${run_id}" ] || continue
+            artifacts="$(gh api "/repos/${REPOSITORY}/actions/runs/${run_id}/artifacts?per_page=100" --jq '.artifacts[].name')"
+            if printf '%s\n' "${artifacts}" | grep -Fxq "${marker_name}"; then
+              artifact_run_id="${run_id}"
+              break
+            fi
+          done <<EOF
+          $(gh api "/repos/${REPOSITORY}/actions/workflows/publish-snap.yml/runs?head_sha=${tag_commit_sha}&branch=main&event=push&status=success&per_page=100" --jq '.workflow_runs[].id')
+          EOF
+
+          expected_revision_amd64=""
+          expected_revision_arm64=""
+          if [ -n "${artifact_run_id}" ]; then
+            artifact_url="$(gh api "/repos/${REPOSITORY}/actions/runs/${artifact_run_id}/artifacts?per_page=100" --jq ".artifacts[] | select(.name == \"${marker_name}\") | .archive_download_url" | head -n1)"
+            test -n "${artifact_url}"
+
+            tmpdir="$(mktemp -d)"
+            trap 'rm -rf "${tmpdir}"' EXIT INT TERM
+            curl -fsSL \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "${artifact_url}" \
+              -o "${tmpdir}/marker.zip"
+            unzip -o "${tmpdir}/marker.zip" -d "${tmpdir}/marker"
+
+            marker_file="${tmpdir}/marker/${marker_name}.txt"
+            test -f "${marker_file}"
+
+            expected_revision_amd64="$(sed -n 's/^source_revision_amd64=//p' "${marker_file}" | head -n1)"
+            expected_revision_arm64="$(sed -n 's/^source_revision_arm64=//p' "${marker_file}" | head -n1)"
+          fi
+          if [ -n "${INPUT_EXPECTED_SOURCE_REVISION_AMD64}" ]; then
+            expected_revision_amd64="${INPUT_EXPECTED_SOURCE_REVISION_AMD64}"
+          fi
+          if [ -n "${INPUT_EXPECTED_SOURCE_REVISION_ARM64}" ]; then
+            expected_revision_arm64="${INPUT_EXPECTED_SOURCE_REVISION_ARM64}"
+          fi
+          if [ -z "${expected_revision_amd64}" ] || [ -z "${expected_revision_arm64}" ]; then
+            echo "Could not resolve expected source-channel revisions for tag commit ${tag_commit_sha}. Provide expected_source_revision_amd64 and expected_source_revision_arm64 when running manually."
+            exit 1
+          fi
+
+          channel_map_json="$(curl -fsSL \
+            -H 'Snap-Device-Series: 16' \
+            -H 'Snap-Device-Architecture: amd64' \
+            -H 'Snap-Classic: true' \
+            "https://api.snapcraft.io/v2/snaps/info/antigravity")"
+
+          current_revision_amd64="$(printf '%s' "${channel_map_json}" | jq -r --arg track "${source_track}" --arg risk "${source_risk}" '.["channel-map"][] | select(.channel.track == $track and .channel.risk == $risk and .channel.architecture == "amd64") | .revision' | head -n1)"
+          current_revision_arm64="$(printf '%s' "${channel_map_json}" | jq -r --arg track "${source_track}" --arg risk "${source_risk}" '.["channel-map"][] | select(.channel.track == $track and .channel.risk == $risk and .channel.architecture == "arm64") | .revision' | head -n1)"
+          test -n "${current_revision_amd64}"
+          test -n "${current_revision_arm64}"
+
+          if [ "${current_revision_amd64}" != "${expected_revision_amd64}" ] || [ "${current_revision_arm64}" != "${expected_revision_arm64}" ]; then
+            echo "${SOURCE_CHANNEL} revisions do not match tag commit ${tag_commit_sha}."
+            echo "Expected amd64=${expected_revision_amd64}, arm64=${expected_revision_arm64}; got amd64=${current_revision_amd64}, arm64=${current_revision_arm64}."
+            exit 1
+          fi
+
+          echo "rev_amd64=${expected_revision_amd64}" >> "${GITHUB_OUTPUT}"
+          echo "rev_arm64=${expected_revision_arm64}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install Snapcraft
+        run: |
+          if ! snap list snapcraft >/dev/null 2>&1; then
+            sudo snap install snapcraft --classic
+          fi
+
+      - name: Promote source to target channel
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.STORE_LOGIN }}
+          TARGET_CHANNEL: ${{ needs.resolve.outputs.target_channel }}
+          REV_AMD64: ${{ steps.verify.outputs.rev_amd64 }}
+          REV_ARM64: ${{ steps.verify.outputs.rev_arm64 }}
+        run: |
+          set -euo pipefail
+          creds_file="$(mktemp)"
+          trap 'rm -f "${creds_file}"' EXIT INT TERM
+          printf '%s' "${SNAPCRAFT_STORE_CREDENTIALS}" > "${creds_file}"
+          snapcraft login --with "${creds_file}"
+          snapcraft release antigravity "${REV_AMD64},${REV_ARM64}" "${TARGET_CHANNEL}"
+
+  mark-promoted:
+    name: Mark promoted release
+    needs:
+      - resolve
+      - promote
+    if: |
+      needs.resolve.outputs.skip_promote != 'true' &&
+      needs.promote.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Create promotion marker artifact
+        env:
+          TARGET_CHANNEL: ${{ needs.resolve.outputs.target_channel }}
+          RELEASE_REF: ${{ needs.resolve.outputs.release_ref }}
+          MARKER_NAME: ${{ needs.resolve.outputs.marker_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p marker
+          printf 'published=%s\nchannel=%s\ntag=%s\nrun_id=%s\n' \
+            "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            "${TARGET_CHANNEL}" \
+            "${RELEASE_REF}" \
+            "${GITHUB_RUN_ID}" \
+            > "marker/${MARKER_NAME}.txt"
+
+      - name: Upload promotion marker artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ needs.resolve.outputs.marker_name }}
+          path: marker/
+          if-no-files-found: error

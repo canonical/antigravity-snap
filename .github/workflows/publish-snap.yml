@@ -1,0 +1,175 @@
+name: Publish the snap
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: snap-publish-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  resolve:
+    name: Resolve build artifacts
+    runs-on: ubuntu-24.04
+    outputs:
+      build_run_id: ${{ steps.resolve.outputs.build_run_id }}
+      commit_sha: ${{ steps.resolve.outputs.commit_sha }}
+      skip_publish: ${{ steps.resolve.outputs.skip_publish }}
+    steps:
+      - name: Resolve reusable build run and publish marker
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          commit_sha="${GITHUB_SHA}"
+          published_marker="published-latest-edge-${commit_sha}"
+          expected_amd64="antigravity-snap-amd64-${commit_sha}"
+          expected_arm64="antigravity-snap-arm64-${commit_sha}"
+
+          echo "commit_sha=${commit_sha}" >> "${GITHUB_OUTPUT}"
+
+          # Skip publish if this exact commit has already been published to edge.
+          skip_publish="false"
+          while IFS= read -r run_id; do
+            [ -n "${run_id}" ] || continue
+            [ "${run_id}" = "${GITHUB_RUN_ID}" ] && continue
+            artifacts="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts?per_page=100" --jq '.artifacts[].name')"
+            if printf '%s\n' "${artifacts}" | grep -Fxq "${published_marker}"; then
+              skip_publish="true"
+              break
+            fi
+          done <<EOF
+          $(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/publish-snap.yml/runs?head_sha=${commit_sha}&status=success&per_page=100" --jq '.workflow_runs[].id')
+          EOF
+
+          echo "skip_publish=${skip_publish}" >> "${GITHUB_OUTPUT}"
+          if [ "${skip_publish}" = "true" ]; then
+            echo "build_run_id=" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          # Wait for the matching build workflow run and ensure artifacts are available.
+          build_run_id=""
+          for _ in $(seq 1 30); do
+            while IFS= read -r run_id; do
+              [ -n "${run_id}" ] || continue
+              artifacts="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts?per_page=100" --jq '.artifacts[].name')"
+              if printf '%s\n' "${artifacts}" | grep -Fxq "${expected_amd64}" && printf '%s\n' "${artifacts}" | grep -Fxq "${expected_arm64}"; then
+                build_run_id="${run_id}"
+                break
+              fi
+            done <<EOF
+          $(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/build-snap.yml/runs?head_sha=${commit_sha}&branch=main&event=push&status=success&per_page=100" --jq '.workflow_runs[].id')
+          EOF
+            [ -n "${build_run_id}" ] && break
+            sleep 20
+          done
+
+          if [ -z "${build_run_id}" ]; then
+            echo "Could not find successful build-snap.yml artifacts for ${commit_sha}."
+            exit 1
+          fi
+
+          echo "build_run_id=${build_run_id}" >> "${GITHUB_OUTPUT}"
+
+  publish:
+    name: Publish (${{ matrix.arch }})
+    needs: resolve
+    if: needs.resolve.outputs.skip_publish != 'true'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+          - arch: arm64
+
+    steps:
+      - name: Download snap artifact from build workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ needs.resolve.outputs.build_run_id }}
+          ARTIFACT_NAME: antigravity-snap-${{ matrix.arch }}-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/${{ matrix.arch }}"
+          artifact_url="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" --jq ".artifacts[] | select(.name == \"${ARTIFACT_NAME}\") | .archive_download_url" | head -n1)"
+          test -n "${artifact_url}"
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${artifact_url}" \
+            -o "dist/${{ matrix.arch }}/artifact.zip"
+          unzip -o "dist/${{ matrix.arch }}/artifact.zip" -d "dist/${{ matrix.arch }}"
+          rm -f "dist/${{ matrix.arch }}/artifact.zip"
+
+      - name: Select snap file
+        id: snap
+        run: |
+          snap_file="$(find "dist/${{ matrix.arch }}" -maxdepth 1 -name '*.snap' | head -n1)"
+          test -n "${snap_file}"
+          echo "path=${snap_file}" >> "${GITHUB_OUTPUT}"
+
+      - name: Publish to Snap Store
+        uses: snapcore/action-publish@214b86e5ca036ead1668c79afb81e550e6c54d40 # v1.2.0
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.STORE_LOGIN }}
+        with:
+          snap: ${{ steps.snap.outputs.path }}
+          release: latest/edge
+
+  mark-published:
+    name: Mark published release
+    needs:
+      - resolve
+      - publish
+    if: |
+      needs.resolve.outputs.skip_publish != 'true' &&
+      needs.publish.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Create publish marker artifact
+        env:
+          COMMIT_SHA: ${{ needs.resolve.outputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p marker
+          channel_map_json="$(curl -fsSL \
+            -H 'Snap-Device-Series: 16' \
+            -H 'Snap-Device-Architecture: amd64' \
+            -H 'Snap-Classic: true' \
+            "https://api.snapcraft.io/v2/snaps/info/antigravity")"
+
+          track="latest"
+          risk="edge"
+
+          source_revision_amd64="$(printf '%s' "${channel_map_json}" | jq -r --arg track "${track}" --arg risk "${risk}" '.["channel-map"][] | select(.channel.track == $track and .channel.risk == $risk and .channel.architecture == "amd64") | .revision' | head -n1)"
+          source_revision_arm64="$(printf '%s' "${channel_map_json}" | jq -r --arg track "${track}" --arg risk "${risk}" '.["channel-map"][] | select(.channel.track == $track and .channel.risk == $risk and .channel.architecture == "arm64") | .revision' | head -n1)"
+
+          test -n "${source_revision_amd64}"
+          test -n "${source_revision_arm64}"
+
+          marker_name="published-latest-edge-${COMMIT_SHA}"
+          printf 'published=%s\nchannel=%s\nsha=%s\nrun_id=%s\nsource_revision_amd64=%s\nsource_revision_arm64=%s\n' \
+            "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            "latest/edge" \
+            "${COMMIT_SHA}" \
+            "${GITHUB_RUN_ID}" \
+            "${source_revision_amd64}" \
+            "${source_revision_arm64}" \
+            > "marker/${marker_name}.txt"
+
+      - name: Upload publish marker artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: published-latest-edge-${{ needs.resolve.outputs.commit_sha }}
+          path: marker/
+          if-no-files-found: error

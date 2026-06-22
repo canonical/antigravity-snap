@@ -2,17 +2,17 @@
 
 This directory contains the CI/CD workflows for building and publishing the Antigravity snap.
 
-## build-and-publish.yml
+## build-snap.yml
 
-Single workflow handling snap building and Snap Store publishing.
+Workflow for build/test only.
 
 ### Runners
 
-`build-and-publish.yml` uses architecture-specific runners for build/test:
+`build-snap.yml` uses architecture-specific runners for build/test:
 - `amd64` builds run on `ubuntu-24.04`
 - `arm64` builds run on `ubuntu-24.04-arm`
 
-`publish` and `detect-new-release.yml` run on `ubuntu-24.04`.
+`publish-snap.yml`, `promote-snap.yml`, and `detect-new-release.yml` run on `ubuntu-24.04`.
 
 ### Build Job
 
@@ -26,25 +26,13 @@ For each architecture (`amd64`, `arm64`), the workflow:
 5. Removes the test installation (cleanup always runs).
 6. Uploads the built `.snap` as a workflow artifact.
 
-### Publish Job
+### Trigger rules for this workflow
 
-Depends on the build job and is gated by the trigger type.
-
-**Trigger rules:**
-
-| Trigger | Publish | Channel | Rules |
-|---|---|---|---|
-| `pull_request` | ✗ | — | Build and test only. |
-| `push` to `main` | ✓ | `latest/edge` | Automatic publish to edge. |
-| `push` tag `v*` | ✓ | `latest/stable` | Tag/version must match `snap/snapcraft.yaml` version. |
-| `workflow_dispatch` | ✓ | Selected input | Manual republish from `source_ref` with chosen channel. |
-
-**Stable publish validation:**
-
-For any publish to `latest/stable`:
-- Extract version from `snap/snapcraft.yaml` (regex: `version: '(.*)'`).
-- Extract tag version (e.g., `v2.0.11` → `2.0.11`).
-- Fail if versions don't match.
+| Trigger | Action | Rules |
+|---|---|---|
+| `pull_request` | Build and test | PR validation only. |
+| `push` to `main` | Build and test | Produces artifacts consumed by `publish-snap.yml`. |
+| `workflow_dispatch` | Build and test | Builds from a selected ref for manual validation. |
 
 ### GitHub Secrets
 
@@ -52,20 +40,84 @@ For any publish to `latest/stable`:
 
 - `STORE_LOGIN`: output of `snapcraft export-login --snaps=antigravity --acls package_access,package_push,package_update,package_release -`.
 
-Only used during `publish` job. Pull requests and build-only workflows do not need this secret.
+Used during publish/promote jobs. Build-only workflows do not need this secret.
 
-### Manual Republish
+### Manual build
 
-Trigger via **Actions > Snap CI/CD > Run workflow**:
+Trigger via **Actions > Snap Build CI > Run workflow**:
 
-1. Enter `source_ref`: a release tag matching `v*` (for example, `v2.0.11`).
-2. Select `channel`: choose the Snap Store channel (`latest/edge`, `latest/beta`, `latest/candidate`, `latest/stable`).
-3. Click **Run workflow**.
+1. Enter `source_ref`: a git ref (branch, tag, or SHA).
+2. Click **Run workflow**.
 
 **Constraints:**
 
-- Manual publish requires `source_ref` to be a `v*` tag (applies to all channels).
-- If targeting `latest/stable`, the tag version must also match `snap/snapcraft.yaml`.
+- Manual build requires a valid git ref.
+
+### Concurrency
+
+Build operations for the same ref are serialized via concurrency group `snap-build-Snap Build CI-<ref>`. In-progress runs are cancelled when a new run starts for the same ref.
+
+## publish-snap.yml
+
+Workflow dedicated to publishing edge snaps from `main` builds.
+
+### Trigger rules
+
+| Trigger | Action | Channel | Rules |
+|---|---|---|---|
+| `push` to `main` | Publish | `latest/edge` | Consumes artifacts from successful `build-snap.yml` for the same commit SHA. |
+
+### Publish behavior
+
+1. Resolves the matching successful build run for the same `main` commit SHA.
+2. Downloads `amd64` and `arm64` snap artifacts from that run.
+3. Publishes both artifacts to `latest/edge`.
+4. Writes an edge publish marker artifact (`published-latest-edge-<sha>`) with source revisions per architecture.
+
+### Concurrency
+
+Publish operations for the same ref are serialized via concurrency group `snap-publish-Snap Publish-<ref>`. In-progress runs are cancelled when a new run starts for the same ref.
+
+## promote-snap.yml
+
+Workflow dedicated to channel promotion without rebuild.
+
+### Trigger rules
+
+| Trigger | Action | Channel | Rules |
+|---|---|---|---|
+| `push` tag `v*` | Promote | `latest/edge` -> `latest/stable` | Uses defaults, validates tag version, and promotes. |
+| `workflow_dispatch` | Promote | Selected source -> selected target | Manual promotion from a `v*` tag via `source_ref`, with configurable `source_channel` and `target_channel`. |
+
+### Promotion command
+
+```sh
+snapcraft release antigravity "<amd64-revision>,<arm64-revision>" <target_channel>
+```
+
+### Promotion validation
+
+For any promotion run:
+- Extract version from `snap/snapcraft.yaml` (regex: `version: '(.*)'`).
+- Extract tag version (e.g., `v2.0.11` → `2.0.11`).
+- Fail if versions don't match.
+- Resolve the promoted tag to its commit SHA.
+- Locate the corresponding source-channel publish marker artifact (`published-<source-channel-slug>-<sha>`) from a successful `publish-snap.yml` run on `main`; for manual runs this can be overridden with explicit expected revisions.
+- Compare the currently published source-channel revisions (amd64/arm64) from the Snap Store channel map with the expected revisions.
+- Fail promotion if any architecture revision differs.
+
+### Manual promotion
+
+Trigger via **Actions > Snap Stable Promote > Run workflow**:
+
+1. Enter `source_ref`: a release tag matching `v*` (for example, `v2.0.11`).
+2. Optionally set `source_channel` (default `latest/edge`) and `target_channel` (default `latest/stable`).
+3. Optionally set `expected_source_revision_amd64` and/or `expected_source_revision_arm64` to override commit-matched defaults.
+4. Click **Run workflow**.
+
+### Concurrency
+
+Promotions for the same ref are serialized via concurrency group `snap-promote-Snap Stable Promote-<ref>`. In-progress runs are cancelled when a new run starts for the same ref.
 
 ### Action Versions
 
@@ -79,10 +131,6 @@ All actions are pinned to immutable commit SHAs:
 - `canonical/has-signed-canonical-cla@v2` (used for CLA verification)
 
 Updates should be reviewed before bumping SHAs.
-
-### Concurrency
-
-Build and publish operations for the same ref are serialized via concurrency group `snap-Snap CI/CD-<ref>`. In-progress runs are cancelled when a new run starts for the same ref.
 
 ## cla.yml
 

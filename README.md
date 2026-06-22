@@ -1,4 +1,6 @@
-# antigravity-snap
+[![antigravity](https://snapcraft.io/antigravity/badge.svg)](https://snapcraft.io/antigravity)
+
+# Antigravity snap
 
 Snap package for [Google Antigravity](https://antigravity.google). 
 
@@ -26,31 +28,11 @@ Then build locally (requires LXD or Multipass):
 snapcraft
 ```
 
-## GitHub Actions
-
-The repository uses three workflows:
-
-- `.github/workflows/build-and-publish.yml` builds and publishes the snap for both architectures.
-- `.github/workflows/cla.yml` verifies that pull request contributors have signed the Canonical Contributor License Agreement (CLA).
-- `.github/workflows/detect-new-release.yml` checks `https://antigravity.google/releases` daily and automatically opens/updates a pull request that bumps `snap/snapcraft.yaml` version and Linux tarball links when a newer release is detected.
-
-See [`.github/workflows/README.md`](.github/workflows/README.md) for detailed workflow documentation, including secret setup, manual publish constraints, and action pinning.
-
-Required repository secret: `STORE_LOGIN` (from `snapcraft export-login`).
-
 To install a locally built snap:
 
 ```sh
 sudo snap install --dangerous --classic antigravity_*.snap
 ```
-
-To cross-build for both architectures using Canonical's remote build infrastructure:
-
-```sh
-snapcraft remote-build --build-for amd64,arm64
-```
-
-See the [remote build documentation](https://snapcraft.io/docs/remote-build) for details.
 
 ## Technical notes
 

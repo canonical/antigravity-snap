@@ -1,0 +1,70 @@
+name: Build the snap
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Git ref to build from (branch, tag, or SHA)
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: snap-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and test (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref }}
+
+      - name: Build snap
+        id: build
+        uses: snapcore/action-build@3bdaa03e1ba6bf59a65f84a751d943d549a54e79 # v1.3.0
+        with:
+          snapcraft-args: pack --build-for=${{ matrix.arch }}
+
+      - name: Prepare snapd
+        run: |
+          sudo snap wait system seed.loaded
+          [ -d /snap ] || sudo ln -s /var/lib/snapd/snap /snap
+
+      - name: Smoke test snap
+        env:
+          SNAP_FILE: ${{ steps.build.outputs.snap }}
+        run: |
+          sudo snap install --dangerous --classic "${SNAP_FILE}"
+          snap run --shell antigravity -c 'test -x "$SNAP/opt/antigravity/antigravity"'
+
+      - name: Remove test install
+        if: always()
+        run: sudo snap remove --purge antigravity || true
+
+      - name: Upload snap artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: antigravity-snap-${{ matrix.arch }}-${{ github.sha }}
+          path: ${{ steps.build.outputs.snap }}
+          if-no-files-found: error
