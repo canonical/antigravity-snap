@@ -177,8 +177,8 @@ jobs:
 
       - name: Smoke test snap
         run: |
-          sudo snap install --dangerous "${{ steps.build.outputs.snap }}"
-          snap run --shell antigravity -c 'test -x "$SNAP/bin/antigravity"; test -x "$SNAP/opt/antigravity/antigravity"'
+          sudo snap install --dangerous --classic "${{ steps.build.outputs.snap }}"
+          snap run --shell antigravity -c 'test -x "$SNAP/opt/antigravity/antigravity"'
 
       - name: Remove test install
         if: always()

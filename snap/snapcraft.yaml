@@ -10,41 +10,20 @@ description: |
   Your command center to manage multiple local agents in parallel. Group conversations into Projects, operate across multiple workspaces, and automate routine tasks with scheduled messages.
 website: https://antigravity.google/
 contact: https://antigravity.google/
+source-code: https://github.com/canonical/antigravity-snap
+issues: https://github.com/canonical/antigravity-snap/issues
 
 grade: stable
-confinement: strict
+confinement: classic
 
 platforms:
   amd64:
   arm64:
 
-plugs:
-  shared-memory:
-    interface: shared-memory
-    private: true
-
 apps:
   antigravity:
-    extensions:
-      - gnome
-    command: bin/antigravity
+    command: opt/antigravity/antigravity
     desktop: share/applications/antigravity.desktop
-    environment:
-      TMPDIR: $XDG_RUNTIME_DIR
-    plugs:
-      - audio-playback
-      - audio-record
-      - camera      
-      - cups-control
-      - home
-      - network
-      - network-bind
-      - opengl
-      - password-manager-service
-      - removable-media
-      - shared-memory
-      - wayland
-      - x11
 
 parts:
   antigravity:
@@ -65,15 +44,10 @@ parts:
           exit 1
           ;;
       esac
-      mkdir -p opt share/icons/hicolor/256x256/apps share/applications bin
+      mkdir -p opt share/icons/hicolor/256x256/apps share/applications
       curl -L "$URL" | tar -xz
       mv "$DIR" opt/antigravity
       install -Dm644 "$CRAFT_PROJECT_DIR/snap/icon.png" share/icons/hicolor/256x256/apps/antigravity.png
-      install -Dm755 "$CRAFT_PROJECT_DIR/snap/local/antigravity-wrapper" bin/antigravity
       install -Dm644 "$CRAFT_PROJECT_DIR/snap/local/antigravity.desktop" share/applications/antigravity.desktop
     build-packages:
       - curl
-    stage-packages:
-      - libnss-wrapper
-    build-attributes:
-      - enable-patchelf

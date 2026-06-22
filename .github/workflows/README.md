@@ -20,13 +20,11 @@ For each architecture (`amd64`, `arm64`), the workflow:
 
 1. Checks out the selected ref (default: `github.ref`; manual runs use `refs/tags/<source_ref>`).
 2. Builds the snap with `snapcore/action-build`.
-3. Installs the produced snap with `--dangerous`.
+3. Installs the produced classic-confinement snap with `--dangerous --classic`.
 4. Runs a smoke test:
-   - Verifies binaries exist: `$SNAP/bin/antigravity` and `$SNAP/opt/antigravity/antigravity`.
+   - Verifies the packaged binary exists: `$SNAP/opt/antigravity/antigravity`.
 5. Removes the test installation (cleanup always runs).
 6. Uploads the built `.snap` as a workflow artifact.
-
-If a previous **successful** run of `build-and-publish.yml` already produced both artifacts for the same commit SHA, the build job is skipped and publish reuses those artifacts from GitHub Actions artifact storage.
 
 ### Publish Job
 
@@ -47,19 +45,6 @@ For any publish to `latest/stable`:
 - Extract version from `snap/snapcraft.yaml` (regex: `version: '(.*)'`).
 - Extract tag version (e.g., `v2.0.11` → `2.0.11`).
 - Fail if versions don't match.
-
-### Artifact Reuse and Publish Skip
-
-Before build/publish, the workflow resolves:
-
-1. Target channel for the current trigger.
-2. Whether both snap artifacts already exist for the current commit SHA in a prior successful run.
-3. Whether the same commit SHA has already been published to the same channel (tracked by a publish marker artifact).
-
-Behavior:
-
-- If artifacts exist for the same commit SHA, build is skipped and publish reuses those artifacts.
-- If commit SHA + channel match an already-published run and artifacts are present, publish is skipped.
 
 ### GitHub Secrets
 
