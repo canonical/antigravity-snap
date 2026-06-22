@@ -16,6 +16,11 @@ issues: https://github.com/canonical/antigravity-snap/issues
 grade: stable
 confinement: classic
 
+lint:
+  ignore:
+    - classic
+    - library
+
 platforms:
   amd64:
   arm64:
