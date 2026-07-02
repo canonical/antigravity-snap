@@ -1,6 +1,6 @@
 name: antigravity
 base: core24
-version: '2.1.4'
+version: '2.2.1'
 title: Antigravity
 summary: Antigravity
 icon: snap/gui/icon.png
@@ -32,11 +32,11 @@ parts:
     override-pull: |
       case "$CRAFT_ARCH_BUILD_FOR" in
         amd64)
-          URL=https://storage.googleapis.com/antigravity-public/antigravity-hub/2.1.4-6481382726303744/linux-x64/Antigravity.tar.gz
+          URL=https://storage.googleapis.com/antigravity-public/antigravity-hub/2.2.1-5287492581195776/linux-x64/Antigravity.tar.gz
           DIR=Antigravity-x64
           ;;
         arm64)
-          URL=https://storage.googleapis.com/antigravity-public/antigravity-hub/2.1.4-6481382726303744/linux-arm/Antigravity.tar.gz
+          URL=https://storage.googleapis.com/antigravity-public/antigravity-hub/2.2.1-5287492581195776/linux-arm/Antigravity.tar.gz
           DIR=Antigravity-arm64
           ;;
         *)
