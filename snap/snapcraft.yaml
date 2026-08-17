@@ -1,5 +1,5 @@
 name: antigravity
-base: core24
+base: core26
 version: '2.8.1'
 title: Antigravity
 summary: Antigravity
