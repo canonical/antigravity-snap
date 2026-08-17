@@ -164,10 +164,9 @@ Daily monitor for **Antigravity Linux** releases with automated PR updates.
 
 1. Checks out the repository at branch `main`.
 2. Reads `version` from `snap/snapcraft.yaml`.
-3. Fetches `https://antigravity.google/releases` and discovers the hashed main JS bundle.
-4. Extracts Antigravity Linux release URLs (not Antigravity IDE) using a full `major.minor.patch` triplet (`/<major>.<minor>.<patch>-build/linux-x64|linux-arm/Antigravity.tar.gz`).
-5. Selects the latest release by semantic version and build number.
-6. Runs `scripts/detect_new_release.sh` to detect the latest release and update `snap/snapcraft.yaml` (`version`, linux-x64 URL, linux-arm URL) when needed.
+3. Fetches release metadata from `https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/releases`.
+4. Selects the latest release by semantic version and build number, then constructs Linux tarball URLs (`/<major>.<minor>.<patch>-build/linux-x64|linux-arm/Antigravity.tar.gz`).
+5. Runs `scripts/detect_new_release.py` to detect the latest release and update `snap/snapcraft.yaml` (`version`, linux-x64 URL, linux-arm URL) when needed.
 7. Pushes an automation branch and creates or updates a PR to `main`.
 
 ### GitHub Secrets and Permissions
@@ -181,5 +180,5 @@ Daily monitor for **Antigravity Linux** releases with automated PR updates.
 
 - Branch naming: `automation/update-antigravity-<version>-<build>`.
 - PR title format: `chore: update Antigravity to <version>`.
-- Source monitored: `https://antigravity.google/releases`.
+- Source monitored: `https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/releases`.
 - Tarball URLs are allowlisted to `https://storage.googleapis.com/antigravity-public/antigravity-hub/.../linux-.../Antigravity.tar.gz`.

@@ -24,7 +24,7 @@ jobs:
         id: detect
         run: |
           set -euo pipefail
-          result="$(scripts/detect_new_release.sh)"
+          result="$(python3 scripts/detect_new_release.py)"
           printf '%s\n' "${result}" >> "${GITHUB_OUTPUT}"
 
       - name: Open or update PR
