@@ -62,7 +62,7 @@ Used exclusively during the `publish-edge` job. PR builds and matrix compilation
 
 All actions are pinned to immutable commit SHAs:
 
-- `actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10` (`v6.0.3`)
+- `actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1` (`v7.0.1`)
 - `actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a` (`v7.0.1`)
 - `actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c` (`v8.0.1`)
 - `snapcore/action-build@3bdaa03e1ba6bf59a65f84a751d943d549a54e79` (`v1.3.0`)
