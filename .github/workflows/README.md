@@ -23,7 +23,7 @@ Unified workflow for building, testing, and continuously publishing the snap pac
 | Trigger | Job Executed | Target Channel | Description |
 |---|---|---|---|
 | `pull_request` | `build` | N/A | PR validation and smoke testing across `amd64` and `arm64`. No store publishing. |
-| `push` to `main` | `build` &rarr; `publish-edge` | `latest/edge` | Builds, smoke tests, and publishes to `latest/edge` via `snapcore/action-publish`. |
+| `push` to `main` | `build` &rarr; `publish-edge` &rarr; `release` | `latest/edge` | Builds, smoke tests, publishes to `latest/edge` via `snapcore/action-publish`, and creates GitHub tag and release. |
 | `workflow_dispatch` | `build` | N/A | Manual trigger to build and test the selected ref. |
 
 ### Build Job
@@ -45,6 +45,15 @@ When a commit lands on `main`:
 1. Waits until **both** `amd64` and `arm64` builds and smoke tests pass.
 2. Downloads the artifacts produced by the `build` job.
 3. Publishes both architectures to `latest/edge` using `snapcore/action-publish`.
+
+### Create Release (`release`)
+
+Following successful publication to `latest/edge`:
+
+1. Checks out the repository.
+2. Extracts `version` from `snap/snapcraft.yaml` to derive tag `v<version>`.
+3. Creates the GitHub tag and Release using `gh release create --generate-notes` pointing to the commit on `main`. GitHub automatically detects the previous release tag to generate the changelog.
+
 
 ### GitHub Secrets
 
