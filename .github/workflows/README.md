@@ -8,22 +8,23 @@ Unified workflow for building, testing, and continuously publishing the snap pac
 
 ### Architecture Overview
 
-- **Pull Requests**: Runs matrix build and smoke tests on `amd64` and `arm64`. No store publishing.
-- **Pushes to `main`**: Runs matrix build and smoke tests across both architectures, then passes verified artifacts to `publish-edge` to release to `latest/edge`.
+- **Pull Requests**: Runs matrix build and smoke tests on `amd64` and `arm64`. If the PR originates from an automated release monitor branch (`automation/update-antigravity-*`) and the matrix checks pass, the PR is automatically squash-merged to `main`.
+- **Pushes to `main`**: Runs matrix build and smoke tests across both architectures, then passes verified artifacts to `publish-edge` to release to `latest/edge` after human environment approval.
 - **Channel Promotion**: Handled directly in the **Snap Store** (via [snapcraft.io](https://snapcraft.io/antigravity/releases) or local `snapcraft promote`). GitHub Actions has zero access to release directly to `beta`, `candidate`, or `stable`.
 
 ### Runners
 
 - `amd64` builds run on `ubuntu-24.04`
 - `arm64` builds run on `ubuntu-24.04-arm`
+- Auto-merge runs on `ubuntu-26.04`
 - Publishing and detection jobs run on `ubuntu-24.04`
 
 ### Trigger Rules
 
 | Trigger | Job Executed | Target Channel | Description |
 |---|---|---|---|
-| `pull_request` | `build` | N/A | PR validation and smoke testing across `amd64` and `arm64`. No store publishing. |
-| `push` to `main` | `build` &rarr; `publish-edge` &rarr; `release` | `latest/edge` | Builds, smoke tests, publishes to `latest/edge` via `snapcore/action-publish`, and creates GitHub tag and release. |
+| `pull_request` | `build` &rarr; `automerge` | N/A | PR validation and smoke testing across `amd64` and `arm64`. Automatically squash-merges release PRs if checks succeed and author is bot. |
+| `push` to `main` | `build` &rarr; `publish-edge` &rarr; `release` | `latest/edge` | Builds, smoke tests, awaits human environment approval, publishes to `latest/edge` via `snapcore/action-publish`, and creates GitHub tag and release. |
 | `workflow_dispatch` | `build` | N/A | Manual trigger to build and test the selected ref. |
 
 ### Build Job
@@ -37,6 +38,15 @@ For each architecture (`amd64`, `arm64`), the workflow:
    - Verifies the packaged binary exists: `$SNAP/opt/antigravity/antigravity`.
 5. Removes the test installation (cleanup always runs).
 6. Uploads the built `.snap` as a workflow artifact when on `main`.
+
+### Auto-Merge Release PRs (`automerge`)
+
+Runs on `ubuntu-26.04`. When triggered by a `pull_request`:
+
+1. Verifies the PR was authored by `github-actions[bot]`, originates from the canonical repository (non-fork), and matches `automation/update-antigravity-*`.
+2. Waits until **both** `amd64` and `arm64` builds and smoke tests pass.
+3. Validates that only `snap/snapcraft.yaml` was modified in the PR.
+4. Uses GitHub CLI to automatically squash-merge the pull request into `main` and delete the automation branch (`gh pr merge --squash --delete-branch`).
 
 ### Publish to Edge (`publish-edge`)
 

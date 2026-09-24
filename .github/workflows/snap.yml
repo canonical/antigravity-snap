@@ -23,9 +23,9 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-24.04
+            runner: ubuntu-26.04
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-26.04-arm
 
     steps:
       - name: Check out repository
@@ -61,11 +61,39 @@ jobs:
           path: ${{ steps.build.outputs.snap }}
           if-no-files-found: error
 
+  automerge:
+    name: Auto-merge release PR
+    needs: build
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.user.login == 'github-actions[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.head_ref, 'automation/update-antigravity-')
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Auto-merge pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -euo pipefail
+
+          changed_files="$(gh pr diff "${PR_URL}" --name-only)"
+          if [ "${changed_files}" != "snap/snapcraft.yaml" ]; then
+            echo "Unexpected files modified in release PR: ${changed_files}"
+            exit 1
+          fi
+
+          gh pr merge "${PR_URL}" --squash --delete-branch
+
   publish-edge:
     name: Publish to latest/edge (${{ matrix.arch }})
     needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     environment:
       name: latest/edge
       deployment: true
@@ -102,7 +130,7 @@ jobs:
     name: Create GitHub release
     needs: publish-edge
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     steps:
