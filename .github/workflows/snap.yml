@@ -87,6 +87,13 @@ jobs:
             exit 1
           fi
 
+          # Verify all commits in the PR are authored exclusively by github-actions[bot]
+          non_bot_authors="$(gh pr view "${PR_URL}" --json commits --jq '[.commits[].authors[].login | select(. != "github-actions[bot]")] | length')"
+          if [ "${non_bot_authors}" -ne 0 ]; then
+            echo "PR contains commits from unauthorized authors"
+            exit 1
+          fi
+
           gh pr merge "${PR_URL}" --squash --delete-branch
 
   publish-edge:

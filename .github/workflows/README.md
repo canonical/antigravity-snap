@@ -46,7 +46,8 @@ Runs on `ubuntu-26.04`. When triggered by a `pull_request`:
 1. Verifies the PR was authored by `github-actions[bot]`, originates from the canonical repository (non-fork), and matches `automation/update-antigravity-*`.
 2. Waits until **both** `amd64` and `arm64` builds and smoke tests pass.
 3. Validates that only `snap/snapcraft.yaml` was modified in the PR.
-4. Uses GitHub CLI to automatically squash-merge the pull request into `main` and delete the automation branch (`gh pr merge --squash --delete-branch`).
+4. Verifies that all commits in the PR were authored exclusively by `github-actions[bot]`.
+5. Uses GitHub CLI to automatically squash-merge the pull request into `main` and delete the automation branch (`gh pr merge --squash --delete-branch`).
 
 ### Publish to Edge (`publish-edge`)
 
