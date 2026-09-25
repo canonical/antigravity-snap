@@ -17,6 +17,7 @@ concurrency:
 jobs:
   build:
     name: Build & test (${{ matrix.arch }})
+    if: github.event_name != 'pull_request' || !startsWith(github.head_ref, 'automation/update-antigravity-')
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -63,7 +64,6 @@ jobs:
 
   automerge:
     name: Auto-merge release PR
-    needs: build
     if: >-
       github.event_name == 'pull_request' &&
       github.event.pull_request.user.login == 'github-actions[bot]' &&
