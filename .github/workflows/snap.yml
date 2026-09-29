@@ -17,7 +17,6 @@ concurrency:
 jobs:
   build:
     name: Build & test (${{ matrix.arch }})
-    if: github.event_name != 'pull_request' || !startsWith(github.head_ref, 'automation/update-antigravity-')
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -61,40 +60,6 @@ jobs:
           name: snap-${{ matrix.arch }}
           path: ${{ steps.build.outputs.snap }}
           if-no-files-found: error
-
-  automerge:
-    name: Auto-merge release PR
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.user.login == 'github-actions[bot]' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.head_ref, 'automation/update-antigravity-')
-    runs-on: ubuntu-26.04
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
-      - name: Auto-merge pull request
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-        run: |
-          set -euo pipefail
-
-          changed_files="$(gh pr diff "${PR_URL}" --name-only)"
-          if [ "${changed_files}" != "snap/snapcraft.yaml" ]; then
-            echo "Unexpected files modified in release PR: ${changed_files}"
-            exit 1
-          fi
-
-          # Verify all commits in the PR are authored exclusively by github-actions[bot]
-          non_bot_authors="$(gh pr view "${PR_URL}" --json commits --jq '[.commits[].authors[].login | select(. != "github-actions[bot]")] | length')"
-          if [ "${non_bot_authors}" -ne 0 ]; then
-            echo "PR contains commits from unauthorized authors"
-            exit 1
-          fi
-
-          gh pr merge "${PR_URL}" --squash --delete-branch
 
   publish-edge:
     name: Publish to latest/edge (${{ matrix.arch }})
