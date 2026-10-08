@@ -12,6 +12,7 @@ website: https://antigravity.google/
 contact: https://antigravity.google/
 source-code: https://github.com/canonical/antigravity-snap
 issues: https://github.com/canonical/antigravity-snap/issues
+license: Apache-2.0
 
 grade: stable
 confinement: classic
@@ -49,10 +50,26 @@ parts:
           exit 1
           ;;
       esac
-      mkdir -p opt share/icons/hicolor/256x256/apps share/applications
       curl -L "$URL" | tar -xz
+      mkdir -p opt
       mv "$DIR" opt/antigravity
-      install -Dm644 "$CRAFT_PROJECT_DIR/snap/icon.png" share/icons/hicolor/256x256/apps/antigravity.png
-      install -Dm644 "$CRAFT_PROJECT_DIR/snap/local/antigravity.desktop" share/applications/antigravity.desktop
+
+    override-build: |
+      craftctl default
+
+      install -Dm644 "$CRAFT_PROJECT_DIR/snap/icon.png" "$CRAFT_PART_INSTALL/share/icons/hicolor/256x256/apps/antigravity.png"
+      install -Dm644 "$CRAFT_PROJECT_DIR/snap/local/antigravity.desktop" "$CRAFT_PART_INSTALL/share/applications/antigravity.desktop"
+
+      # Arm an AppArmor onexec transition in the main process so everything it
+      # spawns runs unconfined, while the desktop app keeps the snap label that
+      # the dock uses to group its windows. See snap/local/apparmor-onexec.js.
+      npm install --no-save @electron/asar
+      npx @electron/asar extract "$CRAFT_PART_INSTALL/opt/antigravity/resources/app.asar" asar-extracted
+      cat "$CRAFT_PROJECT_DIR/snap/local/apparmor-onexec.js" asar-extracted/dist/main.js > asar-extracted/dist/main.js.tmp
+      mv asar-extracted/dist/main.js.tmp asar-extracted/dist/main.js
+      npx @electron/asar pack asar-extracted "$CRAFT_PART_INSTALL/opt/antigravity/resources/app.asar"
+      rm -rf asar-extracted node_modules package-lock.json
     build-packages:
       - curl
+      - nodejs
+      - npm

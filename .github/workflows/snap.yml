@@ -48,6 +48,7 @@ jobs:
         run: |
           sudo snap install --dangerous --classic "${SNAP_FILE}"
           snap run --shell antigravity -c 'test -x "$SNAP/opt/antigravity/antigravity"'
+          snap run --shell antigravity -c 'grep -q "AppArmor onexec transition" "$SNAP/opt/antigravity/resources/app.asar"'
 
       - name: Remove test install
         if: always()
