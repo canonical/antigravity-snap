@@ -4,12 +4,12 @@ This directory contains the CI/CD workflows for building and publishing the Anti
 
 ## snap.yml
 
-Unified workflow for building, testing, and publishing the snap package to the `latest/edge` and `latest/stable` channels.
+Unified workflow for building, testing, and publishing the snap package to the `latest/stable` channel.
 
 ### Architecture Overview
 
 - **Pull Requests**: Runs matrix build and smoke tests across `amd64` and `arm64` (skipped for automated release PRs on `automation/update-antigravity-*` branches). No store publishing.
-- **Pushes to `main`**: Runs matrix build and smoke tests across both architectures, automatically publishes verified artifacts to `latest/edge` via `publish-edge`, and then awaits human approval on the `stable` environment in `promote-stable` to promote the snap to `latest/stable` and create the GitHub Release.
+- **Pushes / Manual Dispatch on `main`**: Runs matrix build and smoke tests across both architectures, then awaits human approval on the `latest/stable` environment in `publish` to release verified artifacts to `latest/stable` and create the GitHub Release.
 
 ### Runners
 
@@ -22,8 +22,8 @@ Unified workflow for building, testing, and publishing the snap package to the `
 | Trigger | Job Executed | Target Channel | Description |
 |---|---|---|---|
 | `pull_request` | `build` | N/A | PR validation and smoke testing across `amd64` and `arm64` (skipped for `automation/update-antigravity-*` release PRs). No store publishing. |
-| `push` to `main` | `build` &rarr; `publish-edge` &rarr; `promote-stable` &rarr; `release` | `latest/edge`, `latest/stable` | Matrix build & smoke test across architectures, automatically publishes to `latest/edge`, awaits human approval on the `stable` environment to publish to `latest/stable`, and creates GitHub tag and release. |
-| `workflow_dispatch` | `build` | N/A | Manual trigger to build and test the selected ref. |
+| `push` to `main` / `workflow_dispatch` on `main` | `build` &rarr; `publish` &rarr; `release` | `latest/stable` | Matrix build & smoke test across architectures, awaits human approval on the `latest/stable` environment, publishes to `latest/stable` via `snapcore/action-publish`, and creates GitHub tag and release. |
+| `workflow_dispatch` (non-`main`) | `build` | N/A | Manual trigger to build and test the selected ref. |
 
 ### Build Job
 
@@ -37,25 +37,18 @@ For each architecture (`amd64`, `arm64`), the workflow:
 5. Removes the test installation (cleanup always runs).
 6. Uploads the built `.snap` as a workflow artifact when on `main`.
 
-### Publish to Edge (`publish-edge`)
+### Publish to Stable (`publish`)
 
 When a commit lands on `main`:
 
 1. Waits until **both** `amd64` and `arm64` builds and smoke tests pass.
-2. Downloads the artifacts produced by the `build` job.
-3. Automatically publishes both architectures to `latest/edge` using `snapcore/action-publish` (without human approval).
-
-### Promote to Stable (`promote-stable`)
-
-Following successful publication to `latest/edge`:
-
-1. Pauses for human approval on the `stable` GitHub environment.
-2. Downloads the artifacts produced by the `build` job.
-3. Publishes/promotes both architectures to `latest/stable` using `snapcore/action-publish`.
+2. Pauses for human approval on the `latest/stable` GitHub environment.
+3. Downloads the artifacts produced by the `build` job.
+4. Publishes both architectures to `latest/stable` using `snapcore/action-publish`.
 
 ### Create Release (`release`)
 
-Following successful promotion to `latest/stable`:
+Following successful publication to `latest/stable`:
 
 1. Checks out the repository.
 2. Extracts `version` from `snap/snapcraft.yaml` to derive tag `v<version>`.
@@ -66,13 +59,13 @@ Following successful promotion to `latest/stable`:
 
 **Required:**
 
-- `STORE_LOGIN`: Scoped to the `latest/edge` and `latest/stable` channels. Export using:
+- `STORE_LOGIN`: Scoped strictly to the `latest/stable` channel. Export using:
   ```bash
-  snapcraft export-login --snaps=antigravity --channels=latest/edge,latest/stable \
+  snapcraft export-login --snaps=antigravity --channels=latest/stable \
     --acls=package_access,package_push,package_update,package_release -
   ```
 
-Used exclusively during the `publish-edge` and `promote-stable` jobs. PR builds and matrix compilation runners have zero access to this secret.
+Used exclusively during the `publish` job. PR builds and matrix compilation runners have zero access to this secret.
 
 ### Action Versions
 
